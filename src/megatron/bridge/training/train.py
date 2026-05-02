@@ -594,7 +594,12 @@ def train(
                 energy_monitor.pause()
             timers("interval-time").stop()
             if should_toggle_forward_pre_hook:
-                disable_forward_pre_hook(model)
+                disable_forward_pre_hook(
+                    model,
+                    optimizer=optimizer,
+                    reuse_grad_buf_for_mxfp8_param_ag=config.optimizer.reuse_grad_buf_for_mxfp8_param_ag,
+                    overlap_param_gather=config.ddp.overlap_param_gather,
+                )
                 pre_hook_enabled = False
             if train_config.manual_gc and train_config.manual_gc_eval:
                 # Collect all objects.
@@ -620,6 +625,11 @@ def train(
                 # Collect only the objects created and used in evaluation.
                 gc.collect(generation=0)
             if should_toggle_forward_pre_hook:
+                if _uses_shared_param_gather_buffer(
+                    config.optimizer.reuse_grad_buf_for_mxfp8_param_ag,
+                    config.ddp.overlap_param_gather,
+                ):
+                    _reset_param_sync_state(model)
                 enable_forward_pre_hook(model)
                 pre_hook_enabled = True
             timers("interval-time", log_level=0).start(barrier=True)
@@ -641,6 +651,9 @@ def train(
             config.train.check_weight_hash_across_dp_replicas_interval,
             global_state.train_state.step,
             should_toggle_forward_pre_hook,
+            optimizer=optimizer,
+            reuse_grad_buf_for_mxfp8_param_ag=config.optimizer.reuse_grad_buf_for_mxfp8_param_ag,
+            overlap_param_gather=config.ddp.overlap_param_gather,
         )
         handle_profiling_stop(
             config.profiling,
@@ -701,7 +714,12 @@ def train(
 
     # Close out pre-hooks if using distributed optimizer and overlapped param gather.
     if pre_hook_enabled:
-        disable_forward_pre_hook(model)
+        disable_forward_pre_hook(
+            model,
+            optimizer=optimizer,
+            reuse_grad_buf_for_mxfp8_param_ag=config.optimizer.reuse_grad_buf_for_mxfp8_param_ag,
+            overlap_param_gather=config.ddp.overlap_param_gather,
+        )
 
     # This will finalize all unfinalized async request and terminate
     # a persistent async worker if persistent ckpt worker is enabled
@@ -991,6 +1009,9 @@ def maybe_check_weight_hash_across_dp_replicas(
     check_weight_hash_across_dp_replicas_interval: Optional[int],
     iteration: int,
     should_toggle_forward_pre_hook: bool,
+    optimizer: Optional[MegatronOptimizer] = None,
+    reuse_grad_buf_for_mxfp8_param_ag: bool = False,
+    overlap_param_gather: bool = False,
 ) -> None:
     """Verifies weight hashes across data-parallel replicas when requested.
 
@@ -999,6 +1020,9 @@ def maybe_check_weight_hash_across_dp_replicas(
         check_weight_hash_across_dp_replicas_interval: Interval at which to verify; ``None`` to skip.
         iteration: Zero-based training iteration counter.
         should_toggle_forward_pre_hook: Whether the pre-hook must be disabled during the check.
+        optimizer: Optimizer used to refill shared param-gather buffers if needed.
+        reuse_grad_buf_for_mxfp8_param_ag: Whether MXFP8 param AG borrows grad storage.
+        overlap_param_gather: Whether param AG is overlapped with forward compute.
     """
 
     interval = check_weight_hash_across_dp_replicas_interval
@@ -1006,7 +1030,12 @@ def maybe_check_weight_hash_across_dp_replicas(
         return
 
     if should_toggle_forward_pre_hook:
-        disable_forward_pre_hook(model)
+        disable_forward_pre_hook(
+            model,
+            optimizer=optimizer,
+            reuse_grad_buf_for_mxfp8_param_ag=reuse_grad_buf_for_mxfp8_param_ag,
+            overlap_param_gather=overlap_param_gather,
+        )
     assert check_param_hashes_across_dp_replicas(model, cross_check=True), (
         "Parameter hashes not matching across DP replicas"
     )
@@ -1064,27 +1093,108 @@ def enable_forward_pre_hook(model: list[DDP]) -> None:
         model_chunk.enable_forward_pre_hook()
 
 
-def disable_forward_pre_hook(model: list[DDP], param_sync: bool = True) -> None:
+def _uses_shared_param_gather_buffer(
+    reuse_grad_buf_for_mxfp8_param_ag: bool,
+    overlap_param_gather: bool,
+) -> bool:
+    """Return whether DDP param AG reads from storage shared with the grad buffer."""
+    return reuse_grad_buf_for_mxfp8_param_ag and overlap_param_gather
+
+
+def _refill_shared_param_gather_buffer_from_main_params(
+    optimizer: Optional[MegatronOptimizer],
+    reuse_grad_buf_for_mxfp8_param_ag: bool,
+    overlap_param_gather: bool,
+) -> None:
+    """Copy optimizer master-weight shards into the param-AG source buffer."""
+    if not _uses_shared_param_gather_buffer(
+        reuse_grad_buf_for_mxfp8_param_ag,
+        overlap_param_gather,
+    ):
+        return
+
+    for optim_instance in getattr(optimizer, "chained_optimizers", [optimizer]):
+        if not isinstance(optim_instance, DistributedOptimizer):
+            continue
+        refill = getattr(optim_instance, "refill_param_gather_buffer_from_main_params", None)
+        if refill is not None:
+            refill()
+        else:
+            optim_instance._copy_main_params_to_param_buffer()
+
+
+def _reset_param_sync_state(model: list[MegatronModule]) -> None:
+    """Clear stale overlapped param-AG bookkeeping without changing buffer contents."""
+    for model_chunk in model:
+        reset = getattr(model_chunk, "reset_param_sync_state", None)
+        if reset is not None:
+            reset()
+
+
+def disable_forward_pre_hook(
+    model: list[DDP],
+    param_sync: bool = True,
+    optimizer: Optional[MegatronOptimizer] = None,
+    reuse_grad_buf_for_mxfp8_param_ag: bool = False,
+    overlap_param_gather: bool = False,
+) -> None:
     """Disable forward pre-hook for all model chunks.
 
     Args:
         model: list of model chunks wrapped in DDP
         param_sync: Whether to synchronize parameters across model chunks
+        optimizer: Optimizer used to refill shared param-gather buffers if needed.
+        reuse_grad_buf_for_mxfp8_param_ag: Whether MXFP8 param AG borrows grad storage.
+        overlap_param_gather: Whether param AG is overlapped with forward compute.
     """
+    refill_shared_buffer = param_sync and _uses_shared_param_gather_buffer(
+        reuse_grad_buf_for_mxfp8_param_ag,
+        overlap_param_gather,
+    )
+    if refill_shared_buffer:
+        _reset_param_sync_state(model)
+        _refill_shared_param_gather_buffer_from_main_params(
+            optimizer,
+            reuse_grad_buf_for_mxfp8_param_ag,
+            overlap_param_gather,
+        )
     for model_chunk in model:
         assert isinstance(model_chunk, DDP)
         model_chunk.disable_forward_pre_hook(param_sync=param_sync)
+    if refill_shared_buffer:
+        _reset_param_sync_state(model)
 
 
-def force_param_sync(model: list[DDP]) -> None:
+def force_param_sync(
+    model: list[DDP],
+    optimizer: Optional[MegatronOptimizer] = None,
+    reuse_grad_buf_for_mxfp8_param_ag: bool = False,
+    overlap_param_gather: bool = False,
+) -> None:
     """Force parameter synchronization for all model chunks.
 
     Args:
         model: list of model chunks wrapped in DDP.
+        optimizer: Optimizer used to refill shared param-gather buffers if needed.
+        reuse_grad_buf_for_mxfp8_param_ag: Whether MXFP8 param AG borrows grad storage.
+        overlap_param_gather: Whether param AG is overlapped with forward compute.
     """
+    refill_shared_buffer = _uses_shared_param_gather_buffer(
+        reuse_grad_buf_for_mxfp8_param_ag,
+        overlap_param_gather,
+    )
+    if refill_shared_buffer:
+        _reset_param_sync_state(model)
+        _refill_shared_param_gather_buffer_from_main_params(
+            optimizer,
+            reuse_grad_buf_for_mxfp8_param_ag,
+            overlap_param_gather,
+        )
     for model_chunk in model:
         assert isinstance(model_chunk, DDP)
         model_chunk.start_param_sync(force_sync=True)
+    if refill_shared_buffer:
+        _reset_param_sync_state(model)
 
 
 def get_start_time_from_progress_log(cfg: ConfigContainer) -> tuple[datetime, float]:
@@ -1232,7 +1342,12 @@ def save_checkpoint_and_time(
         state.cfg.ddp.overlap_param_gather,
     )
     if should_force_param_sync:
-        force_param_sync(model)
+        force_param_sync(
+            model,
+            optimizer=optimizer,
+            reuse_grad_buf_for_mxfp8_param_ag=state.cfg.optimizer.reuse_grad_buf_for_mxfp8_param_ag,
+            overlap_param_gather=state.cfg.ddp.overlap_param_gather,
+        )
 
     # Free overlap param-gather buffers and release cached GPU memory so
     # that the async checkpoint worker process has enough GPU headroom for
@@ -1557,9 +1672,11 @@ def _handle_mxfp8_param_buffer_copy(
         forward_pre_hook_enabled = len(model[0].remove_forward_pre_hook_handles) > 0
         full_cg_captured = FullCudaGraphWrapper.cuda_graph.get("training") is not None
         if forward_pre_hook_enabled or full_cg_captured:
-            for optim_instance in optimizer.chained_optimizers:
-                if isinstance(optim_instance, DistributedOptimizer):
-                    optim_instance._copy_main_params_to_param_buffer()
+            _refill_shared_param_gather_buffer_from_main_params(
+                optimizer,
+                reuse_grad_buf_for_mxfp8_param_ag,
+                overlap_param_gather,
+            )
 
 
 def _delete_cuda_graphs(cuda_graph_helper: TECudaGraphHelper):

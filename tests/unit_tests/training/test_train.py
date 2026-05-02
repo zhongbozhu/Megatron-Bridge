@@ -153,7 +153,12 @@ class TestPostTrainingStepHelpers:
             should_toggle_forward_pre_hook=True,
         )
 
-        mock_disable.assert_called_once_with(model)
+        mock_disable.assert_called_once_with(
+            model,
+            optimizer=None,
+            reuse_grad_buf_for_mxfp8_param_ag=False,
+            overlap_param_gather=False,
+        )
         mock_check.assert_called_once_with(model, cross_check=True)
         mock_barrier.assert_called_once()
         mock_enable.assert_called_once_with(model)
@@ -202,6 +207,20 @@ class TestPostTrainingStepHelpers:
 class TestMxfp8ParamBufferCopy:
     """Unit tests for mxfp8 parameter buffer copying functionality."""
 
+    def _assert_main_param_refill_called(self, optimizer):
+        refill = getattr(optimizer, "refill_param_gather_buffer_from_main_params", None)
+        if refill is not None:
+            refill.assert_called_once()
+            optimizer._copy_main_params_to_param_buffer.assert_not_called()
+        else:
+            optimizer._copy_main_params_to_param_buffer.assert_called_once()
+
+    def _assert_main_param_refill_not_called(self, optimizer):
+        refill = getattr(optimizer, "refill_param_gather_buffer_from_main_params", None)
+        if refill is not None:
+            refill.assert_not_called()
+        optimizer._copy_main_params_to_param_buffer.assert_not_called()
+
     def _create_mock_model(self, forward_pre_hook_enabled: bool = True):
         """Helper to create a mock model with forward_pre_hook configuration."""
         mock_model_chunk = Mock()
@@ -232,7 +251,7 @@ class TestMxfp8ParamBufferCopy:
             overlap_param_gather=True,
         )
 
-        mock_distributed_optimizer._copy_main_params_to_param_buffer.assert_called_once()
+        self._assert_main_param_refill_called(mock_distributed_optimizer)
         assert (
             not hasattr(mock_other_optimizer, "_copy_main_params_to_param_buffer")
             or not mock_other_optimizer._copy_main_params_to_param_buffer.called
@@ -253,7 +272,7 @@ class TestMxfp8ParamBufferCopy:
             overlap_param_gather=True,
         )
 
-        mock_distributed_optimizer._copy_main_params_to_param_buffer.assert_not_called()
+        self._assert_main_param_refill_not_called(mock_distributed_optimizer)
 
     def test_no_copy_when_reuse_grad_buf_false(self):
         """Test that no copying occurs when reuse_grad_buf_for_mxfp8_param_ag is False."""
@@ -269,7 +288,7 @@ class TestMxfp8ParamBufferCopy:
             reuse_grad_buf_for_mxfp8_param_ag=False,
             overlap_param_gather=True,
         )
-        mock_distributed_optimizer._copy_main_params_to_param_buffer.assert_not_called()
+        self._assert_main_param_refill_not_called(mock_distributed_optimizer)
 
     def test_no_copy_when_overlap_param_gather_false(self):
         """Test that no copying occurs when overlap_param_gather is False."""
@@ -286,7 +305,7 @@ class TestMxfp8ParamBufferCopy:
             overlap_param_gather=False,
         )
 
-        mock_distributed_optimizer._copy_main_params_to_param_buffer.assert_not_called()
+        self._assert_main_param_refill_not_called(mock_distributed_optimizer)
 
     def test_no_copy_when_both_flags_false(self):
         """Test that no copying occurs when both flags are False."""
@@ -303,7 +322,7 @@ class TestMxfp8ParamBufferCopy:
             overlap_param_gather=False,
         )
 
-        mock_distributed_optimizer._copy_main_params_to_param_buffer.assert_not_called()
+        self._assert_main_param_refill_not_called(mock_distributed_optimizer)
 
     def test_handles_multiple_distributed_optimizers(self):
         """Test that function calls copy on multiple DistributedOptimizers."""
@@ -327,8 +346,8 @@ class TestMxfp8ParamBufferCopy:
             overlap_param_gather=True,
         )
 
-        mock_distributed_optimizer_1._copy_main_params_to_param_buffer.assert_called_once()
-        mock_distributed_optimizer_2._copy_main_params_to_param_buffer.assert_called_once()
+        self._assert_main_param_refill_called(mock_distributed_optimizer_1)
+        self._assert_main_param_refill_called(mock_distributed_optimizer_2)
 
     def test_only_calls_on_distributed_optimizers(self):
         """Test that only DistributedOptimizer instances get the copy call."""
@@ -355,7 +374,7 @@ class TestMxfp8ParamBufferCopy:
             overlap_param_gather=True,
         )
 
-        mock_distributed_optimizer._copy_main_params_to_param_buffer.assert_called_once()
+        self._assert_main_param_refill_called(mock_distributed_optimizer)
         mock_different_optimizer._copy_main_params_to_param_buffer.assert_not_called()
 
         assert (
@@ -385,8 +404,8 @@ class TestMxfp8ParamBufferCopy:
         )
 
         # Neither optimizer should have copy called
-        mock_distributed_optimizer_1._copy_main_params_to_param_buffer.assert_not_called()
-        mock_distributed_optimizer_2._copy_main_params_to_param_buffer.assert_not_called()
+        self._assert_main_param_refill_not_called(mock_distributed_optimizer_1)
+        self._assert_main_param_refill_not_called(mock_distributed_optimizer_2)
 
 
 class TestShouldDisableForwardPreHook:
@@ -492,7 +511,10 @@ class TestSaveCheckpointAndTime:
             energy_monitor=Mock(),
             cfg=SimpleNamespace(
                 ddp=SimpleNamespace(use_megatron_fsdp=False, overlap_param_gather=True),
-                optimizer=SimpleNamespace(use_distributed_optimizer=True),
+                optimizer=SimpleNamespace(
+                    use_distributed_optimizer=True,
+                    reuse_grad_buf_for_mxfp8_param_ag=False,
+                ),
                 model=SimpleNamespace(fp8=None, seq_length=1),
                 logger=SimpleNamespace(log_progress=False),
                 checkpoint=SimpleNamespace(async_save=False),
@@ -516,19 +538,25 @@ class TestSaveCheckpointAndTime:
     ):
         state, _ = self._make_state()
         model = [Mock()]
+        optimizer = Mock()
         mock_checkpoint_manager = Mock()
 
         save_checkpoint_and_time(
             state=state,
             model=model,
-            optimizer=Mock(),
+            optimizer=optimizer,
             opt_param_scheduler=Mock(),
             num_floating_point_operations_so_far=123.0,
             checkpoint_manager=mock_checkpoint_manager,
         )
 
         mock_should_disable.assert_called_once_with(False, True, True)
-        mock_force_param_sync.assert_called_once_with(model)
+        mock_force_param_sync.assert_called_once_with(
+            model,
+            optimizer=optimizer,
+            reuse_grad_buf_for_mxfp8_param_ag=False,
+            overlap_param_gather=True,
+        )
         mock_checkpoint_manager.save.assert_called_once()
 
     @patch("megatron.bridge.training.train.force_param_sync")
