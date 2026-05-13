@@ -49,6 +49,7 @@ _QWEN35_VL_SFT_FUNCS = [
     _qwen35_vl_module.qwen35_vl_35b_a3b_fsdp_sft_config,
     _qwen35_vl_module.qwen35_vl_122b_a10b_sft_config,
     _qwen35_vl_module.qwen35_vl_397b_a17b_sft_config,
+    _qwen35_vl_module.qwen35_vl_397b_a17b_sft_mxfp8_config,
 ]
 
 # PEFT configs (take peft_scheme parameter)
@@ -481,6 +482,21 @@ def test_qwen35_vl_397b_a17b_sft_defaults(monkeypatch: pytest.MonkeyPatch):
     assert cfg.peft is None
     assert cfg.optimizer.lr == 2e-5
     assert cfg.model.recompute_granularity == "full"
+
+
+def test_qwen35_vl_397b_a17b_sft_mxfp8_defaults(monkeypatch: pytest.MonkeyPatch):
+    """397B-A17B MXFP8 SFT should inherit 397B parallelism and use MXFP8 compute."""
+    monkeypatch.setattr(_qwen35_vl_module, "AutoBridge", _FakeAutoBridge)
+
+    cfg = _qwen35_vl_module.qwen35_vl_397b_a17b_sft_mxfp8_config()
+
+    _assert_basic_config(cfg)
+    assert cfg.model.tensor_model_parallel_size == 2
+    assert cfg.model.pipeline_model_parallel_size == 4
+    assert cfg.model.expert_model_parallel_size == 32
+    assert cfg.mixed_precision.bf16 is True
+    assert cfg.mixed_precision.fp8 == "e4m3"
+    assert cfg.mixed_precision.fp8_recipe == "mxfp8"
 
 
 def test_qwen35_vl_397b_a17b_peft_defaults(monkeypatch: pytest.MonkeyPatch):

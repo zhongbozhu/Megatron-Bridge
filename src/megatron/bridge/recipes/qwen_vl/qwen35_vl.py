@@ -478,6 +478,12 @@ def qwen35_vl_397b_a17b_sft_config(hf_path: str = "Qwen/Qwen3.5-397B-A17B") -> C
     return cfg
 
 
+def qwen35_vl_397b_a17b_sft_mxfp8_config(hf_path: str = "Qwen/Qwen3.5-397B-A17B") -> ConfigContainer:
+    """Return a full SFT config for Qwen3.5-VL 397B-A17B with Blackwell MXFP8."""
+    cfg = qwen35_vl_397b_a17b_sft_config(hf_path)
+    return _qwen35_vl_enable_blackwell_mxfp8(cfg, fp8_param_gather=False)
+
+
 # =============================================================================
 # Qwen3.5-VL Dense PEFT Configurations (800M, 2B, 4B, 9B, 27B)
 # =============================================================================
