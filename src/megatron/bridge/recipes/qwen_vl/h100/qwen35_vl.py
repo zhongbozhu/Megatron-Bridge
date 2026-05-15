@@ -32,6 +32,7 @@ from megatron.bridge.recipes.utils.environment_utils import COMMON_RECIPE_ENV_VA
 from megatron.bridge.recipes.utils.optimizer_utils import distributed_fused_adam_with_cosine_annealing
 from megatron.bridge.recipes.utils.tokenizer_utils import DEFAULT_NULL_TOKENIZER_VOCAB_SIZE
 from megatron.bridge.training.config import ConfigContainer
+from megatron.bridge.training.mixed_precision import get_mixed_precision_config
 
 
 # =============================================================================
@@ -1256,6 +1257,32 @@ def qwen35_vl_397b_a17b_sft_128gpu_h100_bf16_config() -> ConfigContainer:
     return cfg
 
 
+def _enable_qwen35_vl_blackwell_mxfp8(
+    cfg: ConfigContainer,
+    *,
+    fp8_param_gather: bool = False,
+) -> ConfigContainer:
+    """Enable Blackwell MXFP8 while keeping Bridge precision propagation intact."""
+    cfg.mixed_precision = get_mixed_precision_config("bf16_with_mxfp8_mixed")
+    cfg.mixed_precision.grad_reduce_in_fp32 = False
+    cfg.mixed_precision.fp8_param_gather = fp8_param_gather
+    cfg.mixed_precision.reuse_grad_buf_for_mxfp8_param_ag = fp8_param_gather
+    cfg.ddp.grad_reduce_in_fp32 = False
+    return cfg
+
+
+def qwen35_vl_35b_a3b_sft_16gpu_h100_fp8mx_config() -> ConfigContainer:
+    """Return a full SFT config for Qwen3.5-VL 35B-A3B with Blackwell MXFP8."""
+    cfg = qwen35_vl_35b_a3b_sft_16gpu_h100_bf16_config()
+    return _enable_qwen35_vl_blackwell_mxfp8(cfg, fp8_param_gather=False)
+
+
+def qwen35_vl_397b_a17b_sft_128gpu_h100_fp8mx_config() -> ConfigContainer:
+    """Return a full SFT config for Qwen3.5-VL 397B-A17B with Blackwell MXFP8."""
+    cfg = qwen35_vl_397b_a17b_sft_128gpu_h100_bf16_config()
+    return _enable_qwen35_vl_blackwell_mxfp8(cfg, fp8_param_gather=False)
+
+
 # =============================================================================
 # Qwen3.5-VL Dense PEFT Configurations (800M, 2B, 4B, 9B, 27B)
 # =============================================================================
@@ -2113,9 +2140,11 @@ __all__ = [
     "qwen35_vl_35b_a3b_peft_4gpu_h100_bf16_config",
     "qwen35_vl_35b_a3b_pretrain_8gpu_h100_bf16_mock_config",
     "qwen35_vl_35b_a3b_sft_16gpu_h100_bf16_config",
+    "qwen35_vl_35b_a3b_sft_16gpu_h100_fp8mx_config",
     "qwen35_vl_397b_a17b_peft_32gpu_h100_bf16_config",
     "qwen35_vl_397b_a17b_pretrain_512gpu_h100_bf16_mock_config",  # pragma: allowlist secret
     "qwen35_vl_397b_a17b_sft_128gpu_h100_bf16_config",
+    "qwen35_vl_397b_a17b_sft_128gpu_h100_fp8mx_config",
     "qwen35_vl_4b_peft_1gpu_h100_bf16_config",
     "qwen35_vl_4b_sft_2gpu_h100_bf16_config",
     "qwen35_vl_800m_peft_1gpu_h100_bf16_config",

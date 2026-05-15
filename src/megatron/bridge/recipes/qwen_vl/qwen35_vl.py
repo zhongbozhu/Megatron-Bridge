@@ -59,6 +59,9 @@ from megatron.bridge.recipes.qwen_vl.h100.qwen35_vl import (
     qwen35_vl_35b_a3b_sft_16gpu_h100_bf16_config as qwen35_vl_35b_a3b_sft_config,
 )
 from megatron.bridge.recipes.qwen_vl.h100.qwen35_vl import (
+    qwen35_vl_35b_a3b_sft_16gpu_h100_fp8mx_config as qwen35_vl_35b_a3b_sft_mxfp8_config,
+)
+from megatron.bridge.recipes.qwen_vl.h100.qwen35_vl import (
     qwen35_vl_122b_a10b_peft_8gpu_h100_bf16_config as qwen35_vl_122b_a10b_peft_config,
 )
 from megatron.bridge.recipes.qwen_vl.h100.qwen35_vl import (
@@ -75,6 +78,9 @@ from megatron.bridge.recipes.qwen_vl.h100.qwen35_vl import (
 )
 from megatron.bridge.recipes.qwen_vl.h100.qwen35_vl import (
     qwen35_vl_397b_a17b_sft_128gpu_h100_bf16_config as qwen35_vl_397b_a17b_sft_config,
+)
+from megatron.bridge.recipes.qwen_vl.h100.qwen35_vl import (
+    qwen35_vl_397b_a17b_sft_128gpu_h100_fp8mx_config as qwen35_vl_397b_a17b_sft_mxfp8_config,
 )
 from megatron.bridge.recipes.qwen_vl.h100.qwen35_vl import (
     qwen35_vl_800m_peft_1gpu_h100_bf16_config as qwen35_vl_800m_peft_config,
@@ -97,9 +103,11 @@ __all__ = [
     "qwen35_vl_35b_a3b_peft_config",
     "qwen35_vl_35b_a3b_pretrain_mock_config",
     "qwen35_vl_35b_a3b_sft_config",
+    "qwen35_vl_35b_a3b_sft_mxfp8_config",
     "qwen35_vl_397b_a17b_peft_config",
     "qwen35_vl_397b_a17b_pretrain_mock_config",
     "qwen35_vl_397b_a17b_sft_config",
+    "qwen35_vl_397b_a17b_sft_mxfp8_config",
     "qwen35_vl_4b_peft_config",
     "qwen35_vl_4b_sft_config",
     "qwen35_vl_800m_peft_config",
