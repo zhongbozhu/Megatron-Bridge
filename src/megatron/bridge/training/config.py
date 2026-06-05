@@ -1186,8 +1186,20 @@ class ConfigContainer(Container):
 
         # Propagate in-batch packing flag to model config so TransformerConfig.finalize()
         # can enable variable_seq_lengths for pipeline parallelism.
-        if getattr(self.dataset, "pack_sequences_in_batch", False):
+        pack_sequences_in_batch = getattr(self.dataset, "pack_sequences_in_batch", False)
+        if pack_sequences_in_batch:
             self.model._pack_sequences_in_batch = True
+            is_hybridep = (
+                getattr(self.model, "moe_token_dispatcher_type", None) == "flex"
+                and getattr(self.model, "moe_flex_dispatcher_backend", None) == "hybridep"
+            )
+            if is_hybridep:
+                if not hasattr(self.model, "moe_hybridep_pad_variable_tokens"):
+                    raise RuntimeError(
+                        "THD in-batch packing with HybridEP requires MCore "
+                        "moe_hybridep_pad_variable_tokens support."
+                    )
+                self.model.moe_hybridep_pad_variable_tokens = True
 
         if hasattr(self.dataset, "finalize"):
             self.dataset.finalize()
