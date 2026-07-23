@@ -104,11 +104,12 @@ def test_direct_sft_dataset_collates_qwen3_omni_media_and_loss_mask():
         pad_to_multiple_of=1,
     )
 
-    batch = dataset.collate_fn([dataset[0], dataset[1]])
+    dataset_examples = [dataset[0], dataset[1]]
+    batch = dataset.collate_fn(dataset_examples)
 
     conversations, tokenize, kwargs = processor.calls[0]
     assert tokenize is True
-    assert conversations == [example["conversation"] for example in examples]
+    assert conversations == [example["conversation"] for example in dataset_examples]
     assert kwargs["processor_kwargs"] == {"padding": True, "padding_side": "right"}
     assert kwargs["tools"] == examples[0]["tools"]
     assert processor.tokenizer.padding_side == "left"

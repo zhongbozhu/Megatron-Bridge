@@ -15,10 +15,14 @@
 """Runtime dataset for direct SFT examples."""
 
 import inspect
+import random
 from collections.abc import Callable
 from typing import Any
 
 import torch
+
+
+_DEFAULT_SHUFFLE_SEED = 42
 
 
 def _collate_kwargs_for_impl(
@@ -52,6 +56,8 @@ class DirectSFTDataset(torch.utils.data.Dataset):
       are passed through and consumed by the collate function.
     - Dataset length is set to a target length and indexes wrap around the
       underlying list to meet the requested size.
+    - Examples are deterministically shuffled on construction to keep sequential
+      samplers from assigning correlated source rows to the same data-parallel rank.
     - A `collate_fn` attribute is exposed so the framework can pass it to the
       DataLoader.
     """
@@ -70,6 +76,8 @@ class DirectSFTDataset(torch.utils.data.Dataset):
         in_batch_packing_pad_to_multiple_of: int = 1,
     ) -> None:
         assert isinstance(base_examples, list) and len(base_examples) > 0, "base_examples must be a non-empty list"
+        base_examples = list(base_examples)
+        random.Random(_DEFAULT_SHUFFLE_SEED).shuffle(base_examples)
         self._base_examples = base_examples
         self._length = int(max(0, target_length))
         self._processor = processor
