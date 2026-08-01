@@ -2226,11 +2226,26 @@ class TestGroupedExpertLinearAdapter:
         )
         torch.testing.assert_close(merged, expected)
 
-    @pytest.mark.parametrize(("ep_size", "expected_allreduce"), [(1, True), (2, False)])
-    def test_grouped_expert_linear_adapter_allreduce_flag_tracks_expert_parallelism(self, ep_size, expected_allreduce):
-        """Per-expert grouped adapters should use expert-DP grad sync only when EP is enabled."""
+    @pytest.mark.parametrize(
+        ("tp_size", "ep_size", "etp_size", "expected_allreduce"),
+        [
+            pytest.param(1, 1, 1, True, id="no-expert-topology"),
+            pytest.param(2, 1, 2, True, id="matching-tp-etp"),
+            pytest.param(1, 2, 1, False, id="expert-parallel"),
+            pytest.param(2, 1, 1, False, id="tp-larger-than-etp"),
+            pytest.param(1, 1, 2, False, id="etp-larger-than-tp"),
+        ],
+    )
+    def test_grouped_expert_linear_adapter_allreduce_flag_tracks_expert_topology(
+        self, tp_size, ep_size, etp_size, expected_allreduce
+    ):
+        """Per-expert grouped adapters should use expert-DP whenever expert topology differs."""
         config = MockModelParallelConfig()
-        config._pg_collection = make_mock_pg_collection(ep_size=ep_size, etp_size=1)
+        config._pg_collection = make_mock_pg_collection(
+            tp_size=tp_size,
+            ep_size=ep_size,
+            etp_size=etp_size,
+        )
         adapter = GroupedExpertLinearAdapter(
             in_features=2,
             out_features=2,
@@ -2249,17 +2264,31 @@ class TestGroupedExpertLinearAdapter:
         assert adapter.linear_in.weight.partition_dim == 1
         assert adapter.linear_out.weight.partition_dim == 1
 
-    def test_grouped_expert_linear_adapter_groups_as_expert_ddp_buffer_when_ep_enabled(self):
+    @pytest.mark.parametrize(
+        ("tp_size", "ep_size", "etp_size"),
+        [
+            pytest.param(1, 8, 1, id="expert-parallel"),
+            pytest.param(2, 1, 1, id="ep1-tp-larger-than-etp"),
+            pytest.param(1, 1, 2, id="ep1-etp-larger-than-tp"),
+        ],
+    )
+    def test_grouped_expert_linear_adapter_groups_as_expert_ddp_buffer(
+        self, tp_size, ep_size, etp_size
+    ):
         """Per-expert adapter params must sync on expert-DP, not dense DP.
 
-        EP plus DP replicates each local expert across expert-DP ranks. Marking
-        these params as expert-parallel keeps replicas for the same expert in
-        sync without mixing different EP-owned experts.
+        EP or differing TP/ETP layouts make expert-DP ownership differ from
+        ordinary DP. Marking these params as expert-parallel selects the group
+        containing replicas of the same expert shard.
         """
         from megatron.core.distributed.param_and_grad_buffer import group_params_for_buffers
 
         config = MockModelParallelConfig()
-        config._pg_collection = make_mock_pg_collection(ep_size=8, etp_size=1)
+        config._pg_collection = make_mock_pg_collection(
+            tp_size=tp_size,
+            ep_size=ep_size,
+            etp_size=etp_size,
+        )
         adapter = GroupedExpertLinearAdapter(
             in_features=2,
             out_features=2,

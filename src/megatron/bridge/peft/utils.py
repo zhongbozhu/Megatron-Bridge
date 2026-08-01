@@ -1841,12 +1841,16 @@ class GroupedExpertLinearAdapter(nn.Module):
         ParallelLinearAdapter._get_init_fn(self, column_init_method)(linear_in_weight)
         ParallelLinearAdapter._get_init_fn(self, row_init_method)(linear_out_weight)
 
-        expert_parallel = (
-            _process_group_size(
-                self.ep_group,
-                model_parallel_config.expert_model_parallel_size or 1,
-            )
-            > 1
+        expert_parallel_size = _process_group_size(
+            self.ep_group,
+            model_parallel_config.expert_model_parallel_size or 1,
+        )
+        tensor_parallel_size = _process_group_size(
+            _get_tensor_parallel_group(self.pg_collection),
+            model_parallel_config.tensor_model_parallel_size or 1,
+        )
+        use_expert_process_groups = (
+            expert_parallel_size > 1 or expert_tp_size != tensor_parallel_size
         )
         self._linear_in_tp_axis = linear_in_tp_axis
         self._linear_out_tp_axis = linear_out_tp_axis
@@ -1856,7 +1860,9 @@ class GroupedExpertLinearAdapter(nn.Module):
             (self.linear_in.weight, linear_in_tp_axis),
             (self.linear_out.weight, linear_out_tp_axis),
         ):
-            setattr(weight, "allreduce", not expert_parallel)
+            # MCore DDP uses allreduce=False to select expert-DP buffers. Expert
+            # topology is required whenever EP is active or ETP differs from TP.
+            setattr(weight, "allreduce", not use_expert_process_groups)
             if tp_axis is not None:
                 set_tensor_model_parallel_attributes(weight, True, tp_axis, 1)
 
