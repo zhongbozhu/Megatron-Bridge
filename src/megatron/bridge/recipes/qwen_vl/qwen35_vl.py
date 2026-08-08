@@ -82,6 +82,19 @@ from megatron.bridge.recipes.qwen_vl.h100.qwen35_vl import (
 from megatron.bridge.recipes.qwen_vl.h100.qwen35_vl import (
     qwen35_vl_800m_sft_1gpu_h100_bf16_config as qwen35_vl_800m_sft_config,
 )
+from megatron.bridge.training.config import ConfigContainer
+from megatron.bridge.training.mixed_precision import get_mixed_precision_config
+
+
+def qwen35_vl_35b_a3b_sft_mxfp8_config() -> ConfigContainer:
+    """Return the generic Qwen3.5-VL 35B-A3B SFT recipe with MXFP8 compute."""
+    cfg = qwen35_vl_35b_a3b_sft_config()
+    cfg.mixed_precision = get_mixed_precision_config("bf16_with_mxfp8_mixed")
+    cfg.mixed_precision.grad_reduce_in_fp32 = False
+    cfg.mixed_precision.fp8_param_gather = False
+    cfg.mixed_precision.reuse_grad_buf_for_mxfp8_param_ag = False
+    cfg.ddp.grad_reduce_in_fp32 = False
+    return cfg
 
 
 __all__ = [
@@ -97,6 +110,7 @@ __all__ = [
     "qwen35_vl_35b_a3b_peft_config",
     "qwen35_vl_35b_a3b_pretrain_mock_config",
     "qwen35_vl_35b_a3b_sft_config",
+    "qwen35_vl_35b_a3b_sft_mxfp8_config",
     "qwen35_vl_397b_a17b_peft_config",
     "qwen35_vl_397b_a17b_pretrain_mock_config",
     "qwen35_vl_397b_a17b_sft_config",

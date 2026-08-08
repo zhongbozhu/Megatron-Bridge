@@ -203,3 +203,14 @@ def glm52_sft_192gpu_gb200_bf16_config() -> ConfigContainer:
         "NVTE_FWD_LAYERNORM_SM_MARGIN": 20,
     }
     return cfg
+
+
+def glm52_sft_192gpu_gb200_fp8mx_config() -> ConfigContainer:
+    """GLM-5.2 SFT: 192x GB200, MXFP8 compute, 128K packed THD."""
+    cfg = glm52_sft_192gpu_gb200_bf16_config()
+    cfg.mixed_precision = _perf_precision("fp8_mx")
+    # Keep MXFP8 primary weights opt-in; launchers may enable both fields together.
+    cfg.mixed_precision.fp8_param_gather = False
+    cfg.mixed_precision.reuse_grad_buf_for_mxfp8_param_ag = False
+    cfg.ddp.grad_reduce_in_fp32 = False
+    return cfg
