@@ -20,11 +20,12 @@ from megatron.bridge.recipes.qwen_vl.h100.qwen35_vl import (
     qwen35_vl_27b_pretrain_16gpu_h100_bf16_mock_config,
     qwen35_vl_35b_a3b_peft_4gpu_h100_bf16_config,
     qwen35_vl_35b_a3b_sft_16gpu_h100_bf16_config,
+    qwen35_vl_35b_a3b_sft_long_context_32gpu_h100_bf16_config,
 )
 from megatron.bridge.recipes.utils.environment_utils import COMMON_RECIPE_ENV_VARS
 from megatron.bridge.training.comm_overlap import CommOverlapConfig
 from megatron.bridge.training.config import ConfigContainer
-from megatron.bridge.training.mixed_precision import get_mixed_precision_config
+from megatron.bridge.training.mixed_precision import bf16_with_mxfp8_mixed, get_mixed_precision_config
 from megatron.bridge.utils.cuda_graph import set_cuda_graph_modules
 
 
@@ -212,6 +213,56 @@ def qwen35_vl_35b_a3b_sft_8gpu_gb200_bf16_functional_config() -> ConfigContainer
     return cfg
 
 
+def qwen35_vl_35b_a3b_sft_long_context_32gpu_gb200_bf16_config() -> ConfigContainer:
+    """Return 128K Qwen3.5/Qwen3.6-VL 35B-A3B SFT for 32 GB200 GPUs."""
+    cfg = qwen35_vl_35b_a3b_sft_long_context_32gpu_h100_bf16_config()
+
+    cfg.model.seq_length = 131072
+    cfg.model.tensor_model_parallel_size = 2
+    cfg.model.pipeline_model_parallel_size = 1
+    cfg.model.pipeline_dtype = None
+    cfg.model.virtual_pipeline_model_parallel_size = None
+    cfg.model.context_parallel_size = 8
+    cfg.model.expert_model_parallel_size = 32
+    cfg.model.expert_tensor_parallel_size = 1
+    cfg.model.sequence_parallel = True
+    cfg.model.moe_token_dispatcher_type = "flex"
+    cfg.model.moe_flex_dispatcher_backend = "hybridep"
+    cfg.model.moe_flex_dispatcher_num_sms = 32
+    cfg.model.moe_hybridep_num_sms = None
+    cfg.model.moe_hybridep_pad_uneven_dispatch_inputs = True
+
+    cfg.train.global_batch_size = 32
+    cfg.train.micro_batch_size = 1
+    cfg.dataset.seq_length = 131072
+    cfg.dataset.in_batch_packing_pad_to_multiple_of = 16
+
+    cfg.mixed_precision.grad_reduce_in_fp32 = True
+    cfg.ddp.grad_reduce_in_fp32 = True
+    cfg.env_vars = {
+        **cfg.env_vars,
+        "NCCL_GRAPH_REGISTER": 0,
+        "NCCL_NVLS_ENABLE": 0,
+        "NUM_OF_HYBRID_EP_RANKS_PER_NVLINK_DOMAIN": 32,
+        "NUM_OF_TOKENS_PER_CHUNK_COMBINE_API": 128,
+        "NVLINK_DOMAIN_SIZE": 72,
+        "TORCH_NCCL_AVOID_RECORD_STREAMS": 1,
+        "USE_MNNVL": 1,
+    }
+    return cfg
+
+
+def qwen35_vl_35b_a3b_sft_long_context_32gpu_gb200_fp8mx_config() -> ConfigContainer:
+    """Return the 32-GPU GB200 128K SFT recipe with MXFP8 compute."""
+    cfg = qwen35_vl_35b_a3b_sft_long_context_32gpu_gb200_bf16_config()
+    cfg.mixed_precision = bf16_with_mxfp8_mixed()
+    cfg.mixed_precision.grad_reduce_in_fp32 = True
+    cfg.mixed_precision.fp8_param_gather = False
+    cfg.mixed_precision.reuse_grad_buf_for_mxfp8_param_ag = False
+    cfg.ddp.grad_reduce_in_fp32 = True
+    return cfg
+
+
 def qwen35_vl_35b_a3b_peft_8gpu_gb200_bf16_functional_config() -> ConfigContainer:
     """Return shared Qwen3.5/Qwen3.6-VL 35B-A3B LoRA for eight GB200 GPUs."""
     cfg = qwen35_vl_35b_a3b_peft_4gpu_h100_bf16_config()
@@ -223,4 +274,6 @@ __all__ = [
     "qwen35_vl_27b_pretrain_16gpu_gb200_bf16_mock_config",
     "qwen35_vl_35b_a3b_peft_8gpu_gb200_bf16_functional_config",
     "qwen35_vl_35b_a3b_sft_8gpu_gb200_bf16_functional_config",
+    "qwen35_vl_35b_a3b_sft_long_context_32gpu_gb200_bf16_config",
+    "qwen35_vl_35b_a3b_sft_long_context_32gpu_gb200_fp8mx_config",
 ]

@@ -17,6 +17,7 @@ from .gb200.glm5 import (
     glm52_pretrain_192gpu_gb200_bf16_config,
     glm52_sft_192gpu_gb200_bf16_128k_config,
     glm52_sft_192gpu_gb200_bf16_config,
+    glm52_sft_192gpu_gb200_fp8mx_128k_config,
 )
 from .glm45 import (
     glm45_355b_peft_config,
@@ -39,4 +40,5 @@ __all__ = [
     "glm52_pretrain_192gpu_gb200_bf16_config",
     "glm52_sft_192gpu_gb200_bf16_128k_config",
     "glm52_sft_192gpu_gb200_bf16_config",
+    "glm52_sft_192gpu_gb200_fp8mx_128k_config",
 ]
