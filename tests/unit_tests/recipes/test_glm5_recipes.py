@@ -229,6 +229,34 @@ def test_glm52_gb200_128k_recipe_uses_packed_cp() -> None:
     assert cfg.env_vars["USE_MNNVL"] == 1
 
 
+def test_glm52_gb200_192gpu_128k_precision_pair() -> None:
+    bf16_cfg = gb200.glm52_sft_192gpu_gb200_bf16_128k_config()
+    fp8mx_cfg = gb200.glm52_sft_192gpu_gb200_fp8mx_128k_config()
+
+    for cfg in (bf16_cfg, fp8mx_cfg):
+        assert cfg.model.seq_length == 131072
+        assert cfg.model.tensor_model_parallel_size == 1
+        assert cfg.model.pipeline_model_parallel_size == 6
+        assert cfg.model.virtual_pipeline_model_parallel_size is None
+        assert cfg.model.context_parallel_size == 32
+        assert cfg.model.expert_model_parallel_size == 32
+        assert cfg.model.expert_tensor_parallel_size == 1
+        assert cfg.model.sequence_parallel is False
+        assert cfg.model.mtp_num_layers == 1
+        assert cfg.model.pipeline_model_parallel_layout == gb200_glm5._GLM52_PP6_128K_LAYOUT
+        assert cfg.train.global_batch_size == 56
+        assert cfg.train.micro_batch_size == 1
+        assert cfg.dataset.offline_packing_specs.packed_sequence_size == 131072
+        assert cfg.dataset.offline_packing_specs.pad_seq_to_mult == 64
+
+    assert bf16_cfg.mixed_precision.fp8 is None
+    assert fp8mx_cfg.mixed_precision.fp8_recipe == "mxfp8"
+    assert fp8mx_cfg.mixed_precision.grad_reduce_in_fp32 is True
+    assert fp8mx_cfg.ddp.grad_reduce_in_fp32 is True
+    assert fp8mx_cfg.mixed_precision.fp8_param_gather is False
+    assert fp8mx_cfg.mixed_precision.reuse_grad_buf_for_mxfp8_param_ag is False
+
+
 def test_glm52_gb200_sft_uses_8k_packed_tulu3() -> None:
     cfg = gb200.glm52_sft_192gpu_gb200_bf16_config()
 

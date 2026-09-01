@@ -23,7 +23,7 @@ from megatron.bridge.recipes.utils.dataset_utils import default_peft_config, def
 from megatron.bridge.recipes.utils.environment_utils import COMMON_RECIPE_ENV_VARS
 from megatron.bridge.recipes.utils.optimizer_utils import distributed_fused_adam_with_cosine_annealing
 from megatron.bridge.training.config import ConfigContainer
-from megatron.bridge.training.mixed_precision import bf16_mixed
+from megatron.bridge.training.mixed_precision import bf16_mixed, bf16_with_mxfp8_mixed
 
 
 _GLM52_MODEL_ID = "zai-org/GLM-5.2"
@@ -320,6 +320,17 @@ def glm52_sft_192gpu_gb200_bf16_128k_config() -> ConfigContainer:
     return cfg
 
 
+def glm52_sft_192gpu_gb200_fp8mx_128k_config() -> ConfigContainer:
+    """GLM-5.2 128K packed SFT on 192 GB200 GPUs with MXFP8 compute."""
+    cfg = glm52_sft_192gpu_gb200_bf16_128k_config()
+    cfg.mixed_precision = bf16_with_mxfp8_mixed()
+    cfg.mixed_precision.grad_reduce_in_fp32 = True
+    cfg.mixed_precision.fp8_param_gather = False
+    cfg.mixed_precision.reuse_grad_buf_for_mxfp8_param_ag = False
+    cfg.ddp.grad_reduce_in_fp32 = True
+    return cfg
+
+
 def glm52_peft_192gpu_gb200_bf16_config(peft_scheme: str | PEFT = "lora") -> ConfigContainer:
     """GLM-5.2 bounded PEFT on 192 GB200 GPUs."""
     cfg = _peft_common()
@@ -424,4 +435,5 @@ __all__ = [
     "glm52_pretrain_192gpu_gb200_bf16_config",
     "glm52_sft_192gpu_gb200_bf16_128k_config",
     "glm52_sft_192gpu_gb200_bf16_config",
+    "glm52_sft_192gpu_gb200_fp8mx_128k_config",
 ]
