@@ -19,6 +19,8 @@ from .gb200.qwen3_moe import qwen3_30b_a3b_pretrain_8gpu_gb200_fp8mx_functional_
 from .gb200.qwen35 import (
     qwen35_text_9b_pretrain_8gpu_gb200_bf16_config,
     qwen35_text_35b_a3b_pretrain_8gpu_gb200_bf16_config,
+    qwen35_text_35b_a3b_sft_long_context_32gpu_gb200_bf16_config,
+    qwen35_text_35b_a3b_sft_long_context_32gpu_gb200_fp8mx_config,
 )
 
 # Qwen2 models
@@ -173,4 +175,6 @@ __all__ = [
     "qwen35_text_9b_pretrain_8gpu_gb200_bf16_config",
     "qwen35_text_35b_a3b_pretrain_config",
     "qwen35_text_35b_a3b_pretrain_8gpu_gb200_bf16_config",
+    "qwen35_text_35b_a3b_sft_long_context_32gpu_gb200_bf16_config",
+    "qwen35_text_35b_a3b_sft_long_context_32gpu_gb200_fp8mx_config",
 ]

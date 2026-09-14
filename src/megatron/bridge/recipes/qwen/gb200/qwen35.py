@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""GB200 text-only pretraining recipes for Qwen3.5 dense and MoE models."""
+"""GB200 text-only pretraining and SFT recipes for Qwen3.5 models."""
 
 from __future__ import annotations
 
@@ -20,14 +20,140 @@ import torch
 from transformers import AutoConfig
 
 from megatron.bridge import AutoBridge
-from megatron.bridge.recipes.common import _pretrain_common
+from megatron.bridge.data.builders.gpt_sft import GPTSFTDatasetConfig
+from megatron.bridge.data.packing.config import PackedSequenceSpecs
+from megatron.bridge.data.sft_processing import ChatSFTPreprocessingConfig
+from megatron.bridge.recipes.common import _pretrain_common, _sft_common
+from megatron.bridge.recipes.utils.environment_utils import COMMON_RECIPE_ENV_VARS
+from megatron.bridge.recipes.utils.optimizer_utils import distributed_fused_adam_with_cosine_annealing
 from megatron.bridge.training.comm_overlap import CommOverlapConfig
 from megatron.bridge.training.config import ConfigContainer
-from megatron.bridge.training.mixed_precision import bf16_mixed
+from megatron.bridge.training.mixed_precision import bf16_mixed, bf16_with_mxfp8_mixed
 
 
 _QWEN35_9B_BASE = "Qwen/Qwen3.5-9B-Base"
 _QWEN35_35B_A3B_BASE = "Qwen/Qwen3.5-35B-A3B-Base"
+
+
+def qwen35_text_35b_a3b_sft_long_context_32gpu_gb200_bf16_config(
+    seq_length: int = 131072,
+    hf_path: str = "Qwen/Qwen3.5-35B-A3B",
+) -> ConfigContainer:
+    """Text-only SFT with offline packed chat data, TP1/CP8/EP32 and one MTP layer.
+
+    Set the local dataset/checkpoint paths before training. The HF config is
+    pinned to the same instruction checkpoint used by the VL baseline; no
+    vision model is constructed. ``hf_path`` may also be an extracted local
+    causal-LM checkpoint when preparing packed data.
+    """
+    cfg = _sft_common()
+    hf_config = AutoConfig.from_pretrained(hf_path, revision="59d61f3ce65a6d9863b86d2e96597125219dc754")
+    text_config = getattr(hf_config, "text_config", hf_config)
+    text_config.architectures = ["Qwen3_5MoeForCausalLM"]
+    cfg.model = AutoBridge.from_hf_config(text_config).to_megatron_provider(load_weights=False)
+    cfg.tokenizer.tokenizer_model = hf_path
+
+    cfg.model.seq_length = seq_length
+    cfg.model.tensor_model_parallel_size = 1
+    cfg.model.pipeline_model_parallel_size = 1
+    cfg.model.pipeline_dtype = torch.bfloat16
+    cfg.model.virtual_pipeline_model_parallel_size = None
+    cfg.model.context_parallel_size = 8
+    cfg.model.expert_model_parallel_size = 32
+    cfg.model.expert_tensor_parallel_size = 1
+    cfg.model.sequence_parallel = False
+    cfg.model.mtp_num_layers = 1
+    cfg.model.mtp_loss_scaling_factor = 0.1
+    cfg.model.transformer_impl = "transformer_engine"
+    cfg.model.attention_backend = "auto"
+    cfg.model.cuda_graph_impl = "none"
+    cfg.model.gradient_accumulation_fusion = True
+    cfg.model.bias_activation_fusion = True
+    cfg.model.cross_entropy_loss_fusion = True
+    cfg.model.cross_entropy_fusion_impl = "te"
+    cfg.model.calculate_per_token_loss = True
+    cfg.model.apply_rope_fusion = False
+    cfg.model.recompute_granularity = "selective"
+    cfg.model.recompute_modules = ["gdn_norm_out", "moe"]
+    cfg.model.recompute_method = None
+    cfg.model.recompute_num_layers = None
+    cfg.model.moe_token_dispatcher_type = "flex"
+    cfg.model.moe_flex_dispatcher_backend = "hybridep"
+    cfg.model.moe_flex_dispatcher_num_sms = 32
+    cfg.model.moe_hybridep_num_sms = None
+    cfg.model.moe_hybridep_pad_uneven_dispatch_inputs = True
+    cfg.model.moe_router_fusion = True
+    cfg.model.moe_permute_fusion = True
+    cfg.model.moe_grouped_gemm = True
+    cfg.model.moe_shared_expert_overlap = False
+    cfg.model.moe_router_force_load_balancing = False
+    cfg.model.overlap_moe_expert_parallel_comm = False
+    cfg.model.delay_wgrad_compute = False
+
+    # Pad each runtime segment to 2*CP, not each conversation to seq_length.
+    # Physical and logical cu_seqlens remain distinct for attention and MTP.
+    cfg.dataset = GPTSFTDatasetConfig(
+        dataset_root="data/coderforge/materialized",
+        seq_length=seq_length,
+        preprocessing=ChatSFTPreprocessingConfig(loss_mode="assistant"),
+        enable_offline_packing=True,
+        offline_packing_specs=PackedSequenceSpecs(packed_sequence_size=seq_length, pad_seq_to_mult=16),
+        dataset_kwargs={"pad_to_max_length": True},
+        do_validation=True,
+        do_test=False,
+        num_workers=1,
+    )
+    cfg.train.train_iters = 500
+    cfg.train.global_batch_size = 32
+    cfg.train.micro_batch_size = 1
+    cfg.train.manual_gc = True
+    cfg.train.manual_gc_interval = 100
+    cfg.train.manual_gc_eval = 100
+    cfg.rng.seed = 1234
+    cfg.validation.eval_interval = 50
+    cfg.validation.eval_iters = 8
+    # Preserve the VL baseline's LR schedule rather than silently retuning SFT.
+    cfg.optimizer, cfg.scheduler = distributed_fused_adam_with_cosine_annealing(
+        lr_warmup_iters=200, lr_decay_iters=300000, max_lr=2e-5, min_lr=2e-6
+    )
+    cfg.optimizer.use_precision_aware_optimizer = False
+    cfg.optimizer.overlap_param_gather = True
+    cfg.optimizer.overlap_param_gather_with_optimizer_step = False
+    cfg.mixed_precision = bf16_mixed()
+    cfg.mixed_precision.grad_reduce_in_fp32 = True
+    cfg.ddp.grad_reduce_in_fp32 = True
+    cfg.ddp.use_distributed_optimizer = True
+    cfg.ddp.data_parallel_sharding_strategy = "optim_grads_params"
+    cfg.ddp.average_in_collective = False
+    cfg.ddp.overlap_grad_reduce = True
+    cfg.ddp.overlap_param_gather = True
+    cfg.comm_overlap = None  # Do not overwrite launch-time DDP/optimizer choices.
+    cfg.rerun_state_machine.check_for_nan_in_loss = True
+    cfg.env_vars = {
+        **COMMON_RECIPE_ENV_VARS,
+        "CUDA_DEVICE_MAX_CONNECTIONS": 1,
+        "NVTE_BWD_LAYERNORM_SM_MARGIN": 20,
+        "NVTE_FWD_LAYERNORM_SM_MARGIN": 20,
+        "NUM_OF_HYBRID_EP_RANKS_PER_NVLINK_DOMAIN": 32,
+        "NUM_OF_TOKENS_PER_CHUNK_COMBINE_API": 128,
+        "NVLINK_DOMAIN_SIZE": 72,
+        "USE_MNNVL": 1,
+    }
+    cfg.checkpoint.load = None
+    return cfg
+
+
+def qwen35_text_35b_a3b_sft_long_context_32gpu_gb200_fp8mx_config(
+    seq_length: int = 131072,
+    hf_path: str = "Qwen/Qwen3.5-35B-A3B",
+) -> ConfigContainer:
+    """Use MXFP8 compute; FP8 primary weights and grad-buffer reuse stay opt-in."""
+    cfg = qwen35_text_35b_a3b_sft_long_context_32gpu_gb200_bf16_config(seq_length, hf_path)
+    cfg.mixed_precision = bf16_with_mxfp8_mixed()
+    cfg.mixed_precision.grad_reduce_in_fp32 = True
+    cfg.mixed_precision.fp8_param_gather = False
+    cfg.mixed_precision.reuse_grad_buf_for_mxfp8_param_ag = False
+    return cfg
 
 
 def qwen35_text_9b_pretrain_8gpu_gb200_bf16_config() -> ConfigContainer:
