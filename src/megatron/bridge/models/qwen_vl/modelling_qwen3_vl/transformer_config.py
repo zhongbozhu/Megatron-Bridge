@@ -80,6 +80,12 @@ def get_vision_model_config(hf_config, megatron_config=None):
     config.recompute_granularity = megatron_config.recompute_granularity
     config.recompute_method = megatron_config.recompute_method
     config.recompute_num_layers = megatron_config.recompute_num_layers
+    if getattr(megatron_config, "vision_full_recompute", False):
+        # Vision checkpointing is independent of the language model's selective modules.
+        config.recompute_granularity = "full"
+        config.recompute_method = "uniform"
+        config.recompute_num_layers = 1
+        config.recompute_modules = []
     config.tensor_model_parallel_size = megatron_config.tensor_model_parallel_size
     config.enable_cuda_graph = megatron_config.enable_cuda_graph
     config.cuda_graph_use_single_mempool = megatron_config.cuda_graph_use_single_mempool
