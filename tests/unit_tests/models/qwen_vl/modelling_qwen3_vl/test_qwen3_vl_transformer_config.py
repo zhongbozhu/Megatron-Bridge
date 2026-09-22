@@ -66,6 +66,35 @@ def _cuda_graph_storage(config):
     return getattr(config, "cuda_graph_scope", [])
 
 
+@pytest.mark.parametrize(
+    "granularity,method,num_layers",
+    [(None, None, None), ("selective", None, None), ("full", "block", 2)],
+)
+@pytest.mark.parametrize("vision_full_recompute", [None, False, True])
+def test_vision_full_recompute_is_independent(granularity, method, num_layers, vision_full_recompute):
+    megatron = _megatron_base(
+        recompute_granularity=granularity,
+        recompute_method=method,
+        recompute_num_layers=num_layers,
+        recompute_modules=["gdn_norm_out", "moe"],
+    )
+    if vision_full_recompute is not None:
+        megatron.vision_full_recompute = vision_full_recompute
+
+    cfg = get_vision_model_config(_hf_config(), megatron)
+
+    expected = ("full", "uniform", 1) if vision_full_recompute else (granularity, method, num_layers)
+    assert (cfg.recompute_granularity, cfg.recompute_method, cfg.recompute_num_layers) == expected
+    if vision_full_recompute:
+        assert cfg.recompute_modules == []
+    assert (megatron.recompute_granularity, megatron.recompute_method, megatron.recompute_num_layers) == (
+        granularity,
+        method,
+        num_layers,
+    )
+    assert megatron.recompute_modules == ["gdn_norm_out", "moe"]
+
+
 class TestGetVisionModelConfigVisionCudaGraph:
     """Vision encoder CUDA graph propagation from megatron_config (provider)."""
 

@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from dataclasses import fields
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -31,6 +32,14 @@ from megatron.bridge.models.qwen_vl.qwen35_vl_provider import (
 
 
 pytestmark = pytest.mark.skipif(not _TRANSFORMERS_HAS_QWEN3_5, reason="transformers does not have qwen3_5 support")
+
+
+@pytest.mark.parametrize("provider_cls", [Qwen35VLModelProvider, Qwen35VLMoEModelProvider])
+def test_vision_full_recompute_is_opt_in(provider_cls):
+    provider_fields = {item.name: item for item in fields(provider_cls)}
+    assert provider_fields["vision_full_recompute"].default is False
+    provider = provider_cls(num_layers=64, hidden_size=5120, num_attention_heads=24, vision_full_recompute=True)
+    assert provider.vision_full_recompute is True
 
 
 class TestQwen35VLModelProvider:

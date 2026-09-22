@@ -109,11 +109,54 @@ _QWEN35_VL_GB200_FUNCS = [
     _qwen35_vl_gb200_module.qwen35_vl_27b_pretrain_16gpu_gb200_bf16_mock_config,
     _qwen35_vl_gb200_module.qwen35_vl_35b_a3b_sft_8gpu_gb200_bf16_functional_config,
     _qwen35_vl_gb200_module.qwen35_vl_35b_a3b_peft_8gpu_gb200_bf16_functional_config,
+    _qwen35_vl_gb200_module.qwen35_vl_35b_a3b_sft_long_context_32gpu_gb200_bf16_config,
 ]
 
 _QWEN35_VL_GB300_FUNCS = [
     _qwen35_vl_gb300_module.qwen35_vl_397b_a17b_pretrain_config,
 ]
+
+
+def test_qwen35_vl_gb200_long_context_defaults(monkeypatch: pytest.MonkeyPatch):
+    patch_recipe_module_global(monkeypatch, _qwen35_vl_h100_module, "AutoBridge", _FakeAutoBridge)
+    recipe_name = "qwen35_vl_35b_a3b_sft_long_context_32gpu_gb200_bf16_config"
+    recipe = getattr(_qwen35_vl_gb200_module, recipe_name)
+    cfg = recipe()
+    _assert_basic_config(cfg)
+
+    assert getattr(importlib.import_module("megatron.bridge.recipes.qwen_vl"), recipe_name) is recipe
+    assert getattr(importlib.import_module("megatron.bridge.recipes.qwen_vl.gb200"), recipe_name) is recipe
+    assert cfg.model.seq_length == cfg.dataset.seq_length == 131072
+    assert cfg.model.tensor_model_parallel_size == 2
+    assert cfg.model.context_parallel_size == 8
+    assert cfg.model.pipeline_model_parallel_size == 1
+    assert cfg.model.pipeline_dtype is None
+    assert cfg.model.virtual_pipeline_model_parallel_size is None
+    assert cfg.model.expert_model_parallel_size == 32
+    assert cfg.model.expert_tensor_parallel_size == 1
+    assert cfg.model.sequence_parallel is True
+    assert cfg.train.global_batch_size == 32
+    assert cfg.train.micro_batch_size == 1
+    assert cfg.dataset.enable_in_batch_packing is True
+    assert cfg.dataset.defer_in_batch_packing_to_step is True
+    assert cfg.dataset.in_batch_packing_pad_to_multiple_of == 16
+    assert cfg.model.vision_full_recompute is True
+    assert cfg.model.recompute_granularity == "selective"
+    assert cfg.model.recompute_modules == ["gdn_norm_out", "moe"]
+    assert cfg.model.recompute_method is None
+    assert cfg.model.recompute_num_layers is None
+    assert cfg.model.attention_backend == "fused"
+    assert cfg.model.cross_entropy_fusion_impl == "te"
+    assert cfg.model.moe_token_dispatcher_type == "flex"
+    assert cfg.model.moe_flex_dispatcher_backend == "hybridep"
+    assert cfg.model.moe_hybridep_pad_uneven_dispatch_inputs is True
+    assert cfg.model.moe_router_force_load_balancing is False
+    assert cfg.model.cuda_graph_impl == "none"
+    assert cfg.mixed_precision.bf16 is True
+    assert cfg.mixed_precision.fp8 is None
+    assert cfg.mixed_precision.grad_reduce_in_fp32 is True
+    assert cfg.ddp.grad_reduce_in_fp32 is True
+    assert cfg.env_vars["NUM_OF_HYBRID_EP_RANKS_PER_NVLINK_DOMAIN"] == 32
 
 
 class _FakeModelCfg:
