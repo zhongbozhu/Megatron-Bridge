@@ -741,6 +741,46 @@ def test_hf_source_can_split_validation_from_training(monkeypatch, tmp_path):
     assert len((tmp_path / "validation.jsonl").read_text().splitlines()) == 2
 
 
+@pytest.mark.parametrize("missing_split", [None, "training", "validation"])
+def test_hf_validation_split_preserves_heterogeneous_tool_payloads(monkeypatch, tmp_path, missing_split):
+    from datasets import Dataset
+
+    examples = [
+        {
+            "conversation": [
+                {"role": "user", "content": f"question-{idx}"},
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [{"function": {"name": "lookup", "arguments": {"value": value}}}],
+                },
+            ],
+            "id": idx,
+        }
+        for idx, value in enumerate([1, "one", [1, 2], {"nested": True}, None] * 2)
+    ]
+    # Isolate the split from adapter normalization: these are already normalized
+    # Python examples, whose tool arguments must not go through Arrow inference.
+    monkeypatch.setattr(builder_mod, "_load_hf_examples", lambda *_args: examples)
+    config = _hf_config(tmp_path)
+    config.hf_validation_proportion = 0.2
+    expected = Dataset.from_dict({"index": range(len(examples))}).train_test_split(test_size=0.2, seed=config.seed)
+
+    materialize_hf_dataset(config, tmp_path)
+    first_contents = {split: (tmp_path / f"{split}.jsonl").read_bytes() for split in ("training", "validation")}
+    if missing_split is not None:
+        (tmp_path / f"{missing_split}.jsonl").unlink()
+    materialize_hf_dataset(config, tmp_path)
+
+    for output_name, split in (("training", "train"), ("validation", "test")):
+        path = tmp_path / f"{output_name}.jsonl"
+        assert path.read_bytes() == first_contents[output_name]
+        rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+        assert rows == [examples[i] for i in expected[split]["index"]]
+    assert set(expected["train"]["index"]).isdisjoint(expected["test"]["index"])
+    assert sorted(list(expected["train"]["index"]) + list(expected["test"]["index"])) == list(range(10))
+
+
 def test_hf_source_reads_local_json(tmp_path):
     source_path = tmp_path / "source.jsonl"
     source_path.write_text(

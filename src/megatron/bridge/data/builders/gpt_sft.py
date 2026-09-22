@@ -557,14 +557,16 @@ def materialize_hf_dataset(config: GPTSFTDatasetConfig, root: Path) -> None:
             from datasets import Dataset
 
             examples = _load_hf_examples(source, resolve_gpt_sft_preprocessing(config))
-            split_dataset = Dataset.from_list(examples).train_test_split(
+            # Nested chat/tool JSON may mix types that Arrow cannot represent.
+            # Split indices so payloads retain their original Python/JSON types.
+            split_dataset = Dataset.from_dict({"index": range(len(examples))}).train_test_split(
                 test_size=config.hf_validation_proportion,
                 seed=config.seed,
             )
             if write_train:
-                _write_hf_examples(root, "training", list(split_dataset["train"]))
+                _write_hf_examples(root, "training", [examples[i] for i in split_dataset["train"]["index"]])
             if write_validation:
-                _write_hf_examples(root, "validation", list(split_dataset["test"]))
+                _write_hf_examples(root, "validation", [examples[i] for i in split_dataset["test"]["index"]])
     else:
         _materialize_hf_split(config, source, root, output_name="training")
 
