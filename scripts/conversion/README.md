@@ -36,6 +36,16 @@ Output from `scripts/translate_mlm_to_bridge.py` is best-effort configuration
 guidance for a new Bridge run. It is not checkpoint metadata and must not be
 renamed or inserted as `run_config.yaml`.
 
+## Qwen3.5 MoE VL to text-only SFT
+
+For text-only SFT initialized from a Qwen3.5 MoE VL snapshot, first run
+`extract_qwen35_text_checkpoint.py` on the local, unquantized HF checkpoint.
+It removes vision tensors and preserves the decoder, LM head, and pretrained
+MTP weights. Pass the resulting **text-only HF directory** to
+`convert.sh import --hf-model`, not the original VL directory. See the
+[Qwen3.5 text-only long-context guide](../../docs/models/qwen/qwen35-text-long-context.md#prepare-the-text-only-checkpoint)
+for extraction, conversion, offline packing, and `train.sh` commands.
+
 ## Local CPU conversion
 
 Local execution uses the current Megatron Bridge environment and waits for the
