@@ -1700,3 +1700,59 @@ def test_gb200_long_context_pins_model_and_processor_together(monkeypatch):
     cfg = recipe()
     encoder = cfg.dataset.task_encoder
     assert calls == [(encoder.hf_processor_path, {"revision": encoder.hf_processor_revision})]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("precision", ["bf16", "fp8mx"])
+def test_gb200_397b_long_context_validates_with_real_provider(monkeypatch, precision):
+    """The public 397B recipes must validate on 64 ranks with native packing."""
+    from megatron.bridge import recipes
+    from megatron.bridge.models.qwen_vl.qwen35_vl_provider import Qwen35VLMoEModelProvider
+
+    monkeypatch.setattr(
+        torch.cuda, "get_device_properties", lambda index: SimpleNamespace(major=10, name="NVIDIA GB200")
+    )
+    config_module = importlib.import_module("megatron.bridge.training.config")
+    monkeypatch.setattr(config_module, "get_world_size_safe", lambda: 64)
+    requested_models = []
+
+    class RecordingAutoBridge(_FakeAutoBridge):
+        @staticmethod
+        def from_hf_pretrained(hf_path, **kwargs):
+            requested_models.append(hf_path)
+            return RecordingAutoBridge()
+
+        def to_megatron_provider(self, load_weights=False):
+            # Use the same small, real provider as the 35B validation test;
+            # model weights and HF metadata are never loaded.
+            return Qwen35VLMoEModelProvider(num_layers=40, hidden_size=2048, num_attention_heads=16)
+
+    patch_recipe_module_global(monkeypatch, _qwen35_vl_h100_module, "AutoBridge", RecordingAutoBridge)
+    recipe_name = f"qwen35_vl_397b_a17b_sft_long_context_64gpu_gb200_{precision}_config"
+    cfg = getattr(recipes, recipe_name)()
+    assert requested_models == ["Qwen/Qwen3.5-397B-A17B"]
+    assert cfg.dataset.task_encoder.hf_processor_path == requested_models[0]
+    assert cfg.tokenizer.tokenizer_model == requested_models[0]
+    assert cfg.model.seq_length == cfg.dataset.seq_length == 131072
+    assert cfg.model.tensor_model_parallel_size == cfg.model.pipeline_model_parallel_size == 1
+    assert cfg.model.context_parallel_size == 8
+    assert cfg.model.expert_model_parallel_size == 32
+    assert cfg.dataset.shuffle_buffer_size == cfg.dataset.packing_buffer_size == 16
+    assert cfg.dataset.num_workers == 2
+    assert cfg.model.calculate_per_token_loss is True
+    assert cfg.ddp.average_in_collective is False
+    assert cfg.mixed_precision.fp8_param_gather is False
+    assert cfg.mixed_precision.reuse_grad_buf_for_mxfp8_param_ag is False
+    if precision == "fp8mx":
+        assert cfg.mixed_precision.fp8_recipe == "mxfp8"
+        assert cfg.mixed_precision.fp8 == "e4m3"
+    else:
+        assert cfg.mixed_precision.fp8 is None
+
+    cfg.dataset.path = "prepared-clevr2-energon"
+    cfg.dataset.validate()
+    cfg.validate()
+    assert cfg.dataset.pad_to_max_length is True
+    cfg.dataset.enable_in_batch_packing = True
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        cfg.dataset.validate()

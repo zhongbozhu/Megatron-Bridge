@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""GB200 functional recipes shared by Qwen3.5/Qwen3.6-VL 35B-A3B."""
+"""GB200 functional and long-context recipes for Qwen3.5/Qwen3.6-VL."""
 
 from __future__ import annotations
 
@@ -23,6 +23,7 @@ from megatron.bridge.recipes.qwen_vl.h100.qwen35_vl import (
     qwen35_vl_27b_pretrain_16gpu_h100_bf16_mock_config,
     qwen35_vl_35b_a3b_peft_4gpu_h100_bf16_config,
     qwen35_vl_35b_a3b_sft_16gpu_h100_bf16_config,
+    qwen35_vl_397b_a17b_sft_128gpu_h100_bf16_config,
 )
 from megatron.bridge.recipes.utils.environment_utils import COMMON_RECIPE_ENV_VARS
 from megatron.bridge.training.comm_overlap import CommOverlapConfig
@@ -348,10 +349,127 @@ def qwen35_vl_35b_a3b_peft_8gpu_gb200_bf16_functional_config() -> ConfigContaine
     return cfg
 
 
+def _qwen35_vl_397b_a17b_long_context_common() -> ConfigContainer:
+    """Build the shared 64-GB200 long-context SFT configuration."""
+    # Keep the 397B model and optimizer from the short-context SFT recipe.
+    cfg = qwen35_vl_397b_a17b_sft_128gpu_h100_bf16_config()
+    hf_path = "Qwen/Qwen3.5-397B-A17B"
+    cfg.model.calculate_per_token_loss = True
+    cfg.ddp.average_in_collective = False
+
+    cfg.model.mtp_num_layers = 1
+    cfg.model.bias_activation_fusion = True
+    cfg.model.cuda_graph_impl = "none"
+    cfg.model.cuda_graph_scope = []
+    cfg.model.apply_rope_fusion = False
+    cfg.model.moe_router_fusion = True
+    cfg.model.offload_modules = None
+    cfg.model.seq_length = 131072
+    cfg.model.tensor_model_parallel_size = 1
+    cfg.model.pipeline_model_parallel_size = 1
+    cfg.model.pipeline_dtype = None
+    cfg.model.virtual_pipeline_model_parallel_size = None
+    cfg.model.context_parallel_size = 8
+    cfg.model.expert_model_parallel_size = 32
+    cfg.model.expert_tensor_parallel_size = 1
+    cfg.model.sequence_parallel = False
+    cfg.model.moe_token_dispatcher_type = "flex"
+    cfg.model.moe_flex_dispatcher_backend = "hybridep"
+    cfg.model.moe_flex_dispatcher_num_sms = 32
+    cfg.model.moe_hybridep_num_sms = None
+    cfg.model.moe_hybridep_pad_uneven_dispatch_inputs = True
+
+    cfg.model.cross_entropy_fusion_impl = "te"
+    cfg.model.recompute_granularity = "selective"
+    cfg.model.recompute_modules = ["gdn_norm_out", "moe"]
+    cfg.model.recompute_method = None
+    cfg.model.recompute_num_layers = None
+    cfg.model.vision_recompute_granularity = "full"
+    cfg.model.vision_recompute_method = "uniform"
+    cfg.model.vision_recompute_num_layers = 1
+    cfg.model.vision_recompute_modules = None
+
+    cfg.train.micro_batch_size = 1
+    # Nemotron Image Training v3, clevr_2 subset, prepared as Energon shards.
+    # Native packing combines samples into one physical 128K microbatch.
+    cfg.dataset = EnergonDatasetConfig(
+        seq_length=cfg.model.seq_length,
+        micro_batch_size=cfg.train.micro_batch_size,
+        num_workers=2,
+        num_val_workers=1,
+        shuffle_buffer_size=16,
+        packing_buffer_size=16,
+        dataset_kwargs={"image_decode_spec": "pilrgb"},
+        task_encoder=QwenVLEnergonTaskEncoderConfig(
+            hf_processor_path=hf_path,
+            patch_size=16,
+            max_pixels=401408,
+            max_num_images=4,
+            max_visual_tokens=2048,
+        ),
+    )
+
+    cfg.tokenizer.tokenizer_model = hf_path
+
+    cfg.optimizer.lr = 2e-5
+    cfg.optimizer.min_lr = 2e-6
+    cfg.scheduler.lr_warmup_iters = 200
+    cfg.scheduler.lr_decay_iters = 300000
+    cfg.scheduler.lr_wsd_decay_iters = 300000
+    cfg.comm_overlap = CommOverlapConfig(
+        tp_comm_overlap=False,
+        overlap_grad_reduce=False,
+        overlap_param_gather=False,
+        overlap_param_gather_with_optimizer_step=False,
+        overlap_moe_expert_parallel_comm=False,
+        delay_wgrad_compute=False,
+    )
+    cfg.env_vars = {
+        **COMMON_RECIPE_ENV_VARS,
+        "CUDA_DEVICE_MAX_CONNECTIONS": 1,
+        "NVTE_BWD_LAYERNORM_SM_MARGIN": 20,
+        "NVTE_FWD_LAYERNORM_SM_MARGIN": 20,
+        # Both language and vision towers use automatic TE backend selection.
+        "NVTE_FUSED_ATTN": 1,
+        "NVTE_FLASH_ATTN": 1,
+        "NVTE_UNFUSED_ATTN": 1,
+        "NCCL_GRAPH_REGISTER": 0,
+        "NCCL_NVLS_ENABLE": 0,
+        "NUM_OF_HYBRID_EP_RANKS_PER_NVLINK_DOMAIN": 32,
+        "NUM_OF_TOKENS_PER_CHUNK_COMBINE_API": 128,
+        "NVLINK_DOMAIN_SIZE": 72,
+        "TORCH_NCCL_AVOID_RECORD_STREAMS": 1,
+        "USE_MNNVL": 1,
+    }
+    return cfg
+
+
+def qwen35_vl_397b_a17b_sft_long_context_64gpu_gb200_bf16_config() -> ConfigContainer:
+    """Return 128K BF16 Qwen3.5-VL 397B SFT with TP1/CP8/EP32 on 64 GB200 GPUs.
+
+    Supply prepared CLEVR2 Energon shards through dataset.path and a converted
+    397B pretrained checkpoint. Native packing uses one physical 128K microbatch.
+    """
+    cfg = _qwen35_vl_397b_a17b_long_context_common()
+    cfg.mixed_precision = bf16_mixed()
+    return cfg
+
+
+def qwen35_vl_397b_a17b_sft_long_context_64gpu_gb200_fp8mx_config() -> ConfigContainer:
+    """Return the 397B 128K CLEVR2 recipe with MXFP8 and BF16 parameter communication."""
+    cfg = _qwen35_vl_397b_a17b_long_context_common()
+    cfg.mixed_precision = bf16_with_mxfp8_mixed()
+    cfg.mixed_precision.fp8_param_gather = False
+    cfg.mixed_precision.reuse_grad_buf_for_mxfp8_param_ag = False
+    return cfg
+
+
 __all__ = [
     "qwen35_vl_27b_pretrain_16gpu_gb200_bf16_mock_config",
     "qwen35_vl_35b_a3b_peft_8gpu_gb200_bf16_functional_config",
     "qwen35_vl_35b_a3b_sft_8gpu_gb200_bf16_functional_config",
     "qwen35_vl_35b_a3b_sft_long_context_32gpu_gb200_bf16_config",
     "qwen35_vl_35b_a3b_sft_long_context_32gpu_gb200_fp8mx_config",
+    "qwen35_vl_397b_a17b_sft_long_context_64gpu_gb200_bf16_config",
+    "qwen35_vl_397b_a17b_sft_long_context_64gpu_gb200_fp8mx_config",
 ]
